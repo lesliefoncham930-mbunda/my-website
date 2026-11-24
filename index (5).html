@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CoolWatch Data Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 30 30%27%3E%3Crect x=%273%27 y=%273%27 width=%2724%27 height=%2724%27 rx=%276%27 fill=%27%23091219%27 stroke=%27%234cc3e8%27 stroke-width=%272%27/%3E%3Cpath d=%27M9 11h12M9 15h12M9 19h7%27 stroke=%27%234cc3e8%27 stroke-width=%272%27 stroke-linecap=%27round%27/%3E%3Ccircle cx=%2721%27 cy=%2719%27 r=%272.2%27 fill=%27%23ff7a45%27/%3E%3C/svg%3E">
+<meta name="description" content="CoolWatch – IoT data center cooling monitoring with live MQTT dashboard">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@112,500;112,700;112,800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: dark control-room console (light theme available). Overview = live airflow cross-section hero;
+   Dashboard = connection bar, status strip, rack floor map, trends, alerts, MQTT message log; Setup = wiring the data in. */
+:root {
+  color-scheme: dark;
+  --bg: #091219;
+  --surface: #0e1a22;
+  --surface-2: #13232e;
+  --raised: #182c39;
+  --line: #20384a;
+  --fg: #e3edf2;
+  --muted: #8ba2b1;
+  --accent: #4cc3e8;        /* chilled supply air */
+  --accent-soft: #10303f;
+  --accent-ink: #04151d;
+  --hot: #ff7a45;           /* exhaust air */
+  --ok: #3cc98d; --warn: #f0ae3e; --crit: #ff5d5d;
+  --ok-bg: #0f3127; --warn-bg: #3a2b10; --crit-bg: #3f171a;
+  --glow: rgba(76, 195, 232, .16);
+  --f-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --radius: 12px;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  color-scheme: light;
+  --bg: #eef3f6; --surface: #ffffff; --surface-2: #e5ecf1; --raised: #f6f9fb; --line: #cdd9e1; --fg: #0e1c26; --muted: #52687a;
+  --accent: #0a7fb0; --accent-soft: #d6edf7; --accent-ink: #ffffff; --hot: #d0532b; --ok: #1d8a5a; --warn: #a96d12; --crit: #c53030;
+  --ok-bg: #dff3e9; --warn-bg: #fbefd9; --crit-bg: #fbe1e1; --glow: rgba(10, 127, 176, .10) } }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef3f6; --surface: #ffffff; --surface-2: #e5ecf1; --raised: #f6f9fb; --line: #cdd9e1; --fg: #0e1c26; --muted: #52687a;
+  --accent: #0a7fb0; --accent-soft: #d6edf7; --accent-ink: #ffffff; --hot: #d0532b; --ok: #1d8a5a; --warn: #a96d12; --crit: #c53030;
+  --ok-bg: #dff3e9; --warn-bg: #fbefd9; --crit-bg: #fbe1e1; --glow: rgba(10, 127, 176, .10) }
+
+* { box-sizing: border-box }
+html { scroll-behavior: smooth }
+body { background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 20; background: var(--surface) }
+.wrap { max-width: 1260px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)) }
+h1, h2, h3 { font-family: var(--f-display); font-stretch: 112%; text-wrap: balance; margin: 0; line-height: 1.08 }
+.mono, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums }
+.eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent) }
+a { color: var(--accent) }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px }
+code { font-family: var(--f-mono); font-size: .9em; background: var(--surface-2); padding: 1px 6px; border-radius: 5px }
+
+/* ---------- top bar ---------- */
+.topbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 15; background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line) }
+.topbar .wrap { display: flex; align-items: center; gap: 14px; padding-block: 10px; flex-wrap: wrap }
+.brand { display: flex; align-items: center; gap: 10px; font: 800 19px var(--f-display); font-stretch: 112%; color: var(--fg); text-decoration: none }
+.nav { display: flex; gap: 2px; margin-left: auto; flex-wrap: wrap }
+.nav a { text-decoration: none; color: var(--muted); padding: 8px 14px; border-radius: 8px; font-weight: 500 }
+.nav a:hover { color: var(--fg) }
+.nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent) }
+.conn { display: inline-flex; align-items: center; gap: 8px; font: 600 12px var(--f-mono); letter-spacing: .04em; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); text-decoration: none; white-space: nowrap }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none }
+.conn.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent) } .conn.on .dot { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 22%, transparent) }
+.conn.busy { color: var(--warn) } .conn.busy .dot { background: var(--warn) }
+.conn.err { color: var(--crit) } .conn.err .dot { background: var(--crit) }
+@media (prefers-reduced-motion: no-preference) { .conn.on .dot { animation: pulse 1.6s ease-in-out infinite } @keyframes pulse { 50% { box-shadow: 0 0 0 7px transparent } } }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--fg); font: 600 14px var(--f-body); padding: 10px 16px; border-radius: 9px; cursor: pointer; text-decoration: none; white-space: nowrap }
+.btn:hover { border-color: var(--accent) }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink) }
+.btn.primary:hover { filter: brightness(1.08) }
+.btn.ghost { background: transparent }
+.btn.small { padding: 7px 12px; font-size: 13px }
+
+/* ---------- overview ---------- */
+.hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); background: radial-gradient(900px 420px at 78% 30%, var(--glow), transparent 70%) }
+.hero .wrap { display: grid; grid-template-columns: 1fr 1.08fr; gap: 40px; align-items: center; padding-block: 56px 48px }
+.hero .wrap > * { min-width: 0 }
+.hero h1 { font-size: clamp(36px, 5.2vw, 62px); font-weight: 800; margin-top: 14px; letter-spacing: -.015em }
+.hero h1 em { font-style: normal; color: var(--accent) }
+.hero h1 b { color: var(--hot); font-weight: 800 }
+.lead { font-size: 18px; color: var(--muted); max-width: 52ch; margin: 18px 0 26px }
+.ctas { display: flex; gap: 12px; flex-wrap: wrap }
+.stage { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px; box-shadow: 0 30px 80px -40px rgba(0,0,0,.6) }
+.stage canvas { width: 100%; height: auto; aspect-ratio: 16 / 10; display: block; border-radius: 10px; background: var(--surface-2); max-width: 100% }
+.stage-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px }
+.readout { display: flex; gap: 18px; flex-wrap: wrap }
+.readout div { display: grid }
+.readout span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em }
+.readout b { font: 600 20px var(--f-mono) }
+.stage small { color: var(--muted); font-size: 12px }
+
+.section { padding-block: 56px; border-bottom: 1px solid var(--line) }
+.section h2 { font-size: clamp(26px, 3.2vw, 36px); font-weight: 700; margin: 10px 0 14px }
+.section .intro { color: var(--muted); max-width: 66ch; margin: 0 0 26px }
+.flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; counter-reset: s }
+.flow li { list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; position: relative; min-width: 0 }
+.flow li::after { content: "→"; position: absolute; right: -13px; top: 50%; transform: translateY(-50%); color: var(--accent); font-weight: 700; z-index: 1 }
+.flow li:last-child::after { content: none }
+.flow .tag { font: 600 12px var(--f-mono); color: var(--accent) }
+.flow h3 { font-size: 19px; margin: 8px 0 6px }
+.flow p { margin: 0; color: var(--muted); font-size: 14px }
+.flow ol { display: contents }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; align-items: start }
+.split > * { min-width: 0 }
+.feat { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 28px }
+.feat h3 { font-size: 17px; margin-bottom: 4px }
+.feat p { margin: 0; color: var(--muted); font-size: 14px }
+.limits { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden }
+.limits th, .limits td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line) }
+.limits th { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); background: var(--surface-2) }
+.limits tr:last-child td { border-bottom: 0 }
+.pill { display: inline-block; font: 600 11px var(--f-mono); padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em }
+.pill.ok { background: var(--ok-bg); color: var(--ok) } .pill.warn { background: var(--warn-bg); color: var(--warn) } .pill.crit { background: var(--crit-bg); color: var(--crit) }
+.tablebox { overflow-x: auto }
+.chips { display: flex; flex-wrap: wrap; gap: 8px }
+.chip { font: 13px var(--f-mono); padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface) }
+.cta-band { display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; background: linear-gradient(120deg, var(--accent-soft), var(--surface)); border: 1px solid var(--line); border-radius: 16px; padding: 28px }
+.cta-band h2 { margin: 6px 0 0 }
+footer { padding-block: 28px; color: var(--muted); font-size: 13px }
+footer .wrap { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap }
+
+/* ---------- dashboard ---------- */
+.dash-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; padding-block: 26px 16px }
+.dash-head h1 { font-size: clamp(26px, 3.4vw, 38px); font-weight: 800 }
+.source { font-size: 13px; color: var(--muted); margin-top: 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+.badge { display: inline-flex; align-items: center; gap: 6px; font: 600 11px var(--f-mono); letter-spacing: .05em; padding: 4px 9px; border-radius: 999px; text-transform: uppercase }
+.badge.sample { background: var(--warn-bg); color: var(--warn) } .badge.live { background: var(--ok-bg); color: var(--ok) } .badge.file { background: var(--accent-soft); color: var(--accent) }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap }
+
+.sources { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden }
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); overflow-x: auto }
+.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); font: 600 14px var(--f-body); padding: 13px 18px; cursor: pointer; white-space: nowrap }
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent) }
+.tabpane { padding: 16px 18px }
+.mqtt-form { display: grid; grid-template-columns: 2.2fr 1.6fr 1fr 1fr auto; gap: 10px; align-items: end }
+.mqtt-form > * { min-width: 0 }
+.field { display: grid; gap: 5px }
+.field label { font-size: 12px; color: var(--muted) }
+.field input { width: 100%; font: 13.5px var(--f-mono); padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--fg) }
+.hint { font-size: 13px; color: var(--muted); margin: 10px 0 0 }
+.hint.err { color: var(--crit) } .hint.okk { color: var(--ok) }
+.drop { border: 2px dashed var(--line); border-radius: 12px; padding: 16px 18px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; transition: border-color .15s, background .15s }
+.drop.over { border-color: var(--accent); background: var(--accent-soft) }
+.drop .txt { flex: 1; min-width: 200px }
+.drop strong { display: block }
+.drop span { color: var(--muted); font-size: 13px }
+
+.kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 16px }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; min-width: 0 }
+.kpi .lbl { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em }
+.kpi .val { font: 600 27px var(--f-mono); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.kpi .val small { font-size: 14px; color: var(--muted); font-weight: 400 }
+.kpi .sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.kpi.status { border-left: 4px solid var(--ok) }
+.kpi.s-warn { border-left-color: var(--warn) } .kpi.s-crit { border-left-color: var(--crit) }
+.kpi.fan-on .val { color: var(--accent) } .kpi.fan-off .val { color: var(--muted) }
+.kpi.s-ok .val { color: var(--ok) } .kpi.s-warn .val { color: var(--warn) } .kpi.s-crit .val { color: var(--crit) }
+
+.grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; margin-top: 14px }
+.grid > * { min-width: 0 }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: flex; flex-direction: column }
+.panel h2 { font-size: 16px; font-weight: 700; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap }
+.panel h2 small { font: 400 12px var(--f-mono); color: var(--muted) }
+.chartbox { position: relative; height: 290px; margin-top: 10px; flex: 1 1 auto }
+.chartbox.sm { height: 220px }
+.full { margin-top: 14px }
+
+.floor { display: grid; gap: 10px; margin-top: 12px }
+.racks { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px }
+.rack { border-radius: 9px; padding: 10px; border: 1px solid var(--line); background: var(--surface-2); min-width: 0; position: relative }
+.rack .id { font: 600 12px var(--f-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.rack .t { font: 600 21px var(--f-mono) }
+.rack .h { font: 12px var(--f-mono); color: var(--muted) }
+.rack.s-ok { background: var(--ok-bg); border-color: transparent } .rack.s-ok .t { color: var(--ok) }
+.rack.s-warn { background: var(--warn-bg); border-color: transparent } .rack.s-warn .t { color: var(--warn) }
+.rack.s-crit { background: var(--crit-bg); border-color: var(--crit) } .rack.s-crit .t { color: var(--crit) }
+.rack.stale { opacity: .55 }
+.rack.flash::after { content: ""; position: absolute; top: 9px; right: 9px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent) }
+.aisle-label { display: flex; justify-content: space-between; font: 600 11px var(--f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent) }
+.aisle-label span:last-child { color: var(--muted) }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 12px }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px }
+
+.alerts { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; max-height: 286px; overflow-y: auto; align-content: start }
+.alerts li { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; padding: 10px 12px; border-radius: 9px; background: var(--surface-2); font-size: 14px }
+.alerts .when { grid-column: 2; font: 12px var(--f-mono); color: var(--muted) }
+.empty { color: var(--muted); font-size: 14px; padding: 10px 2px }
+.thresh { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px }
+.thresh .field input { width: 92px }
+
+.log { margin-top: 10px; font: 12.5px/1.55 var(--f-mono); background: var(--surface-2); border-radius: 9px; padding: 10px 12px; height: 220px; overflow: auto }
+.log div { white-space: nowrap }
+.log .tp { color: var(--accent) } .log .tm { color: var(--muted) }
+
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px }
+.data-table th, .data-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap }
+.data-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); background: var(--surface-2); position: sticky; top: 0 }
+.data-table td { font-family: var(--f-mono); font-variant-numeric: tabular-nums }
+.scroll { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; margin-top: 10px }
+
+/* ---------- setup ---------- */
+.steps { display: grid; gap: 14px; counter-reset: st; margin: 0; padding: 0 }
+.steps > li { list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px 18px 62px; position: relative; min-width: 0 }
+.steps > li::before { counter-increment: st; content: counter(st); position: absolute; left: 18px; top: 17px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font: 700 14px var(--f-mono) }
+.steps h3 { font-size: 18px; margin-bottom: 6px }
+.steps p, .steps li li { color: var(--muted); font-size: 14.5px }
+.steps p { margin: 6px 0 }
+.steps ul { margin: 6px 0; padding-left: 18px }
+pre.code { position: relative; font: 12.5px/1.6 var(--f-mono); background: var(--surface-2); border: 1px solid var(--line); padding: 14px 16px; border-radius: 10px; overflow-x: auto; margin: 10px 0 0; color: var(--fg) }
+.copy { position: absolute; top: 8px; right: 8px }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 14px; margin-top: 8px }
+.kv dt { color: var(--muted) } .kv dd { margin: 0; font-family: var(--f-mono); overflow-wrap: anywhere }
+.setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px }
+.setup-grid > * { min-width: 0 }
+
+/* presentation mode */
+body.present { font-size: 17px }
+body.present .kpi .val { font-size: 30px }
+body.present .chartbox { height: 360px }
+body.present .sources, body.present .hide-present, body.present .thresh { display: none }
+
+@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(3, 1fr) } .mqtt-form { grid-template-columns: 1fr 1fr } .mqtt-form .go { grid-column: 1 / -1 } }
+@media (max-width: 900px) {
+  .hero .wrap, .grid, .split, .setup-grid { grid-template-columns: 1fr }
+  .flow { grid-template-columns: 1fr 1fr } .flow li::after { content: none }
+}
+@media (max-width: 560px) {
+  .kpis, .feat, .flow, .mqtt-form { grid-template-columns: 1fr 1fr } .flow, .feat, .mqtt-form { grid-template-columns: 1fr }
+  .nav { margin-left: 0 } .steps > li { padding-left: 20px; padding-top: 56px }
+}
+</style>
+<style>[hidden]{display:none!important} body{margin:0} img{max-width:100%}</style>
+</head>
+<body>
+
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="#overview" aria-label="CoolWatch overview">
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect x="3" y="3" width="24" height="24" rx="6" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M9 11h12M9 15h12M9 19h7" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/><circle cx="21" cy="19" r="2.2" fill="var(--hot)"/></svg>
+      CoolWatch
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#dashboard" data-view="dashboard">Dashboard</a>
+      <a href="#setup" data-view="setup">Setup</a>
+    </nav>
+    <a class="conn" id="conn-pill" href="#dashboard" title="Data connection"><span class="dot"></span><span id="conn-text">SAMPLE DATA</span></a>
+  </div>
+</header>
+
+<!-- ======================= OVERVIEW ======================= -->
+<main id="view-overview">
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <div class="eyebrow">IoT · Data center cooling · MQTT</div>
+        <h1>Cold air in.<br><b>Hot spots</b> out.<br><em>Every rack, live.</em></h1>
+        <p class="lead">CoolWatch puts a sensor on every server rack, streams inlet temperature and humidity over MQTT, and shows the whole room on one live dashboard, with an alarm the moment cooling starts to fail.</p>
+        <div class="ctas">
+          <a class="btn primary" href="#dashboard">Open live dashboard →</a>
+          <a class="btn ghost" href="#setup">Connect your sensors</a>
+        </div>
+      </div>
+      <figure class="stage" style="margin:0">
+        <canvas id="airflow" width="960" height="600" aria-label="Animated cross-section of cold air flowing through server racks"></canvas>
+        <div class="stage-bar">
+          <div class="readout">
+            <div><span>Avg inlet</span><b id="ro-avg">–</b></div>
+            <div><span>Hottest rack</span><b id="ro-hot">–</b></div>
+            <div><span>Status</span><b id="ro-st">–</b></div>
+          </div>
+          <small id="ro-src">from sample data</small>
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <div class="eyebrow">How it works</div>
+      <h2>From the rack to your screen in under a second</h2>
+      <p class="intro">Each ESP32 node publishes a small JSON message to an MQTT broker. The dashboard subscribes to the same topic over a secure WebSocket, so a new reading appears on screen as soon as it is sent.</p>
+      <ol class="flow">
+        <li><div class="tag">SENSE</div><h3>Rack sensor</h3><p>A DHT22 on the rack inlet measures temperature and humidity every 5 s.</p></li>
+        <li><div class="tag">PUBLISH</div><h3>ESP32 node</h3><p>Classifies the reading, drives the fan and buzzer, and publishes JSON over Wi-Fi.</p></li>
+        <li><div class="tag">ROUTE</div><h3>MQTT broker</h3><p>Receives every reading on <code>hossam7192/datacenter/#</code> and forwards it to subscribers.</p></li>
+        <li><div class="tag">SHOW</div><h3>Dashboard</h3><p>Subscribes over WebSocket, updates charts, floor map and alerts in real time.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap split">
+      <div>
+        <div class="eyebrow">What it does</div>
+        <h2>Built for the people who keep the room cold</h2>
+        <div class="feat" style="margin-top:22px">
+          <div><h3>Rack floor map</h3><p>Every rack coloured by its latest inlet temperature, so a hot spot is visible at a glance.</p></div>
+          <div><h3>Early warnings</h3><p>Warning and critical alerts fire before servers throttle or shut down.</p></div>
+          <div><h3>Live over MQTT</h3><p>New readings stream in through any MQTT broker with WebSocket support.</p></div>
+          <div><h3>Works offline too</h3><p>The node keeps its own alarm logic, so fan and buzzer react without a network.</p></div>
+          <div><h3>Upload old logs</h3><p>Drop a CSV or JSON export to review a past day or a fault.</p></div>
+          <div><h3>Presentation mode</h3><p>A larger layout for a projector or a wall screen in the control room.</p></div>
+        </div>
+      </div>
+      <div>
+        <div class="eyebrow">Operating limits</div>
+        <h2>ASHRAE A1 thresholds</h2>
+        <p class="intro" style="margin-bottom:16px">Defaults for class A1 IT equipment. Operators can change them on the dashboard.</p>
+        <div class="tablebox">
+          <table class="limits">
+            <thead><tr><th>Status</th><th>Inlet temperature</th><th>Humidity</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill ok">OK</span></td><td class="num">≤ 27 °C</td><td class="num">20 – 80 %RH</td></tr>
+              <tr><td><span class="pill warn">Warning</span></td><td class="num">27 – 32 °C</td><td class="num">outside 20 – 80 %RH</td></tr>
+              <tr><td><span class="pill crit">Critical</span></td><td class="num">&gt; 32 °C</td><td class="num">outside 8 – 90 %RH</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="eyebrow" style="margin-top:28px">Components</div>
+        <div class="chips" style="margin-top:10px">
+          <span class="chip">ESP32-S3</span><span class="chip">DHT22</span><span class="chip">Relay + fan</span><span class="chip">Buzzer</span><span class="chip">MQTT broker</span><span class="chip">MQTT.js</span><span class="chip">Chart.js</span><span class="chip">GitHub Pages</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="border-bottom:0">
+    <div class="wrap">
+      <div class="cta-band">
+        <div><div class="eyebrow">Live dashboard</div><h2>Watch the room breathe</h2></div>
+        <div class="ctas"><a class="btn primary" href="#dashboard">Open dashboard →</a><a class="btn" href="#setup">Setup guide</a></div>
+      </div>
+    </div>
+  </section>
+  <footer><div class="wrap"><span>CoolWatch · IoT Data Center Cooling Monitoring System</span><span>Savonia University of Applied Sciences · 2026</span></div></footer>
+</main>
+
+<!-- ======================= DASHBOARD ======================= -->
+<main id="view-dashboard" hidden>
+  <div class="wrap">
+    <div class="dash-head">
+      <div>
+        <h1>Cooling dashboard</h1>
+        <div class="source"><span id="src-badge" class="badge sample">Sample data</span><span id="src-text"></span></div>
+      </div>
+      <div class="head-actions">
+        <button class="btn small" id="btn-present" type="button">Presentation mode</button>
+      </div>
+    </div>
+
+    <section class="sources" aria-label="Data source">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-mqtt" aria-selected="true" aria-controls="pane-mqtt" type="button">Live MQTT</button>
+        <button role="tab" id="tab-file" aria-selected="false" aria-controls="pane-file" type="button">Upload file</button>
+        <button role="tab" id="tab-demo" aria-selected="false" aria-controls="pane-demo" type="button">Demo</button>
+      </div>
+      <div class="tabpane" id="pane-mqtt" role="tabpanel">
+        <form class="mqtt-form" id="mqtt-form" autocomplete="off">
+          <div class="field"><label for="m-url">Broker WebSocket URL</label><input id="m-url" type="text" value="wss://broker.emqx.io:8084/mqtt" spellcheck="false"></div>
+          <div class="field"><label for="m-topic">Topic</label><input id="m-topic" type="text" value="hossam7192/datacenter/#" spellcheck="false"></div>
+          <div class="field"><label for="m-user">Username (optional)</label><input id="m-user" type="text" spellcheck="false"></div>
+          <div class="field"><label for="m-pass">Password (optional)</label><input id="m-pass" type="password"></div>
+          <button class="btn primary go" id="m-go" type="submit">Connect</button>
+        </form>
+        <p class="hint" id="m-hint">Set up for our ESP32: plain-text values on <code>hossam7192/datacenter/temperature</code>, <code>/humidity</code> and <code>/fan/status</code> on the public EMQX broker. JSON messages work too.</p>
+      </div>
+      <div class="tabpane" id="pane-file" role="tabpanel" hidden>
+        <div class="drop" id="drop">
+          <svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+          <div class="txt"><strong>Upload sensor data</strong><span>Drop a CSV or JSON file here. Needs at least a time and a temperature column.</span></div>
+          <label class="btn primary" for="file">Choose file<input id="file" type="file" accept=".csv,.json,.txt,text/csv,application/json" hidden></label>
+        </div>
+        <p class="hint" id="f-hint"></p>
+      </div>
+      <div class="tabpane" id="pane-demo" role="tabpanel" hidden>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn primary" id="d-stream" type="button">Start demo stream</button>
+          <button class="btn" id="d-sample" type="button">Load 24 h sample</button>
+          <span class="hint" style="margin:0">The demo stream simulates MQTT messages from 8 racks inside the page, with a cooling fault on R-B3. No broker needed.</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>Rack inlet temperature <small id="t-sub"></small></h2>
+        <div class="chartbox"><canvas id="c-temp" aria-label="Inlet temperature per rack over time"></canvas></div>
+      </section>
+      <section class="panel">
+        <h2>Rack floor map <small>latest reading</small></h2>
+        <div class="floor" id="floor"></div>
+        <div class="legend"><span><i style="background:var(--ok)"></i>Normal</span><span><i style="background:var(--warn)"></i>Warning</span><span><i style="background:var(--crit)"></i>Critical</span><span><i style="background:var(--muted)"></i>No data &gt; 60 s</span></div>
+      </section>
+    </div>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>Humidity <small>average across racks · %RH</small></h2>
+        <div class="chartbox sm"><canvas id="c-hum" aria-label="Average humidity over time"></canvas></div>
+      </section>
+      <section class="panel">
+        <h2>Alerts <small id="a-sub"></small></h2>
+        <ul class="alerts" id="alerts"></ul>
+        <div class="thresh">
+          <div class="field"><label for="t-warn">Warning °C</label><input id="t-warn" type="number" step="0.5" value="27"></div>
+          <div class="field"><label for="t-crit">Critical °C</label><input id="t-crit" type="number" step="0.5" value="32"></div>
+          <div class="field"><label for="h-min">Min %RH</label><input id="h-min" type="number" step="1" value="20"></div>
+          <div class="field"><label for="h-max">Max %RH</label><input id="h-max" type="number" step="1" value="80"></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="grid">
+      <section class="panel" id="extra-panel">
+        <h2><span id="x-title">Airflow and power</span> <small id="x-sub"></small></h2>
+        <div class="chartbox sm" id="x-box"><canvas id="c-extra" aria-label="Airflow and power over time"></canvas></div>
+        <p class="empty" id="x-empty" hidden>This source sends no airflow or power values. Add <code>airflow</code> or <code>power</code> to the JSON payload to chart them here.</p>
+      </section>
+      <section class="panel">
+        <h2>MQTT messages <small id="log-sub">not connected</small></h2>
+        <div class="log" id="log"><div class="tm">Messages appear here as they arrive.</div></div>
+      </section>
+    </div>
+
+    <section class="panel full" style="margin-bottom:34px">
+      <h2>Readings <small id="r-sub"></small></h2>
+      <div class="scroll"><table class="data-table" id="table"></table></div>
+    </section>
+  </div>
+</main>
+
+<!-- ======================= SETUP ======================= -->
+<main id="view-setup" hidden>
+  <div class="wrap" style="padding-block:30px 40px">
+    <div class="eyebrow">Setup guide</div>
+    <h1 style="font-size:clamp(28px,3.6vw,40px);margin:10px 0 10px">Get live data on the dashboard</h1>
+    <p class="intro" style="color:var(--muted);max-width:68ch">The ESP32, MQTT Explorer and this page all talk to the same MQTT broker. The ESP32 and MQTT Explorer use normal MQTT (port 1883). A web page can only use MQTT over a WebSocket, so the dashboard uses the broker's WebSocket port.</p>
+
+    <div class="setup-grid" style="margin-top:20px">
+      <div class="panel">
+        <h2>Message format</h2>
+        <div class="tablebox"><table class="limits" style="margin-top:10px">
+          <thead><tr><th>Topic</th><th>Payload (plain text)</th></tr></thead>
+          <tbody>
+            <tr><td class="num">hossam7192/datacenter/temperature</td><td class="num">25.50 &nbsp;(°C)</td></tr>
+            <tr><td class="num">hossam7192/datacenter/humidity</td><td class="num">45.20 &nbsp;(%RH)</td></tr>
+            <tr><td class="num">hossam7192/datacenter/fan/status</td><td class="num">ON or OFF</td></tr>
+          </tbody>
+        </table></div>
+        <p class="hint">The dashboard subscribes to <code>hossam7192/datacenter/#</code> and merges the values into one reading. It also accepts JSON such as <code>{"rack":"R-A1","temperature":23.4,"humidity":45}</code> on <code>hossam7192/datacenter/R-A1</code>, so more racks can be added later.</p>
+      </div>
+      <div class="panel">
+        <h2>Broker addresses</h2>
+        <div class="tablebox"><table class="limits" style="margin-top:10px">
+          <thead><tr><th>Used by</th><th>Host</th><th>Port</th></tr></thead>
+          <tbody>
+            <tr><td>ESP32, MQTT Explorer</td><td class="num">broker.emqx.io</td><td class="num">1883</td></tr>
+            <tr><td>Dashboard (browser)</td><td class="num">wss://broker.emqx.io:8084/mqtt</td><td class="num">8084</td></tr>
+          </tbody>
+        </table></div>
+        <p class="hint">The public broker is shared by everyone, so anyone can read these messages. Keep the topic unique and send no secrets. For a private setup, use a free EMQX Cloud or HiveMQ Cloud broker and enter its username and password.</p>
+      </div>
+    </div>
+
+    <ol class="steps" style="margin-top:18px">
+      <li>
+        <h3>Connect MQTT Explorer to the broker</h3>
+        <ul>
+          <li>Install MQTT Explorer from mqtt-explorer.com and open it.</li>
+          <li>Click <b>+</b> to add a connection. Name: <code>CoolWatch</code>, Protocol: <code>mqtt://</code>, Host: <code>broker.emqx.io</code>, Port: <code>1883</code>, Encryption off, no username or password.</li>
+          <li>Open <b>Advanced</b>, delete the default <code>#</code> subscription and add <code>hossam7192/datacenter/#</code>. Click <b>Back</b>, then <b>Connect</b>.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Connect this dashboard to the same broker</h3>
+        <p>Open <a href="#dashboard">Dashboard</a> → <b>Live MQTT</b>. Keep the broker URL <code>wss://broker.emqx.io:8084/mqtt</code> and topic <code>hossam7192/datacenter/#</code>, then press <b>Connect</b>. The pill at the top turns green.</p>
+      </li>
+      <li>
+        <h3>Send a test message from MQTT Explorer</h3>
+        <ul>
+          <li>In the <b>Publish</b> panel on the right, set Topic to <code>hossam7192/datacenter/temperature</code> and choose <b>raw</b> (plain text).</li>
+          <li>Type <code>25.50</code> and press <b>Publish</b>. The value appears in the message log and on the floor map.</li>
+          <li>Publish <code>33</code> to see a critical alert, and <code>ON</code> to <code>hossam7192/datacenter/fan/status</code> to switch the fan card. Everyone watching the topic sees test values too, so tell your team first.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Flash the ESP32</h3>
+        <p>Upload the CoolWatch firmware with your Wi-Fi details in <code>secrets.h</code>. It publishes every 5 s to the same topic, and you can watch the messages arrive in MQTT Explorer and on the dashboard at the same time.</p>
+      </li>
+      <li>
+        <h3>Host the page online with GitHub Pages</h3>
+        <ul>
+          <li>Create a public repository, for example <code>coolwatch-dashboard</code>, and upload this page as <code>index.html</code> in the root.</li>
+          <li>Go to <b>Settings → Pages</b>. Under <b>Build and deployment</b> choose <b>Deploy from a branch</b>, branch <code>main</code>, folder <code>/ (root)</code>, and save.</li>
+          <li>After a minute the page is live at <code>https://&lt;your-username&gt;.github.io/coolwatch-dashboard/</code>.</li>
+          <li>Because the page uses HTTPS, the broker URL must start with <code>wss://</code>. A plain <code>ws://</code> broker is blocked by the browser.</li>
+        </ul>
+      </li>
+    </ol>
+  </div>
+  <footer><div class="wrap"><span>CoolWatch · Setup</span><a href="#dashboard">Go to dashboard →</a></div></footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+
+  /* ---------------- routing ---------------- */
+  const VIEWS = ["overview", "dashboard", "setup"];
+  function route() {
+    const h = location.hash.replace("#", "");
+    const v = VIEWS.includes(h) ? h : "overview";
+    VIEWS.forEach(n => $("view-" + n).hidden = n !== v);
+    document.querySelectorAll(".nav a").forEach(a => a.dataset.view === v ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
+    window.scrollTo(0, 0);
+    if (v === "dashboard") render(true);
+  }
+  window.addEventListener("hashchange", route);
+
+  /* ---------------- data model ---------------- */
+  // row = { time: Date, rack, temp, hum, air, power }
+  let DATA = [], SOURCE = { kind: "sample", name: "" }, COLS = {};
+  const MAX_LIVE = 4000;
+
+  function sampleData() {
+    const racks = ["R-A1", "R-A2", "R-A3", "R-A4", "R-B1", "R-B2", "R-B3", "R-B4"];
+    const rows = []; const start = new Date(); start.setMinutes(0, 0, 0); start.setHours(start.getHours() - 24);
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 96; i++) {
+      const t = new Date(start.getTime() + i * 15 * 60000); const hr = i / 4;
+      const day = Math.sin((hr - 9) / 24 * 2 * Math.PI) * 1.4;
+      racks.forEach((r, k) => {
+        let temp = 21.5 + k * 0.35 + day + (rnd() - .5) * .6, air = 820 - k * 10 + (rnd() - .5) * 30;
+        if (r === "R-B3" && hr > 18) { const f = Math.min(1, (hr - 18) / 4); temp += 12 * f; air -= 300 * f; }
+        if (r === "R-B4" && hr > 20) temp += 5 * Math.min(1, (hr - 20) / 2);
+        rows.push({ time: t, rack: r, temp: +temp.toFixed(1), hum: +(44 + Math.sin(hr / 3) * 5 + (rnd() - .5) * 3 - (r === "R-B3" && hr > 19 ? 7 : 0)).toFixed(1), air: Math.round(air), power: +(4 + k * .15 + (rnd() - .5) * .3).toFixed(2) });
+      });
+    }
+    return rows;
+  }
+
+  const ALIAS = {
+    time: ["timestamp", "time", "datetime", "date", "ts", "created_at"],
+    rack: ["rack", "rack_id", "sensor", "sensor_id", "device", "device_id", "node", "location", "id", "name"],
+    temp: ["temperature", "temp", "temp_c", "temperature_c", "inlet_temp", "t"],
+    hum: ["humidity", "hum", "rh", "humidity_rh", "relative_humidity", "h"],
+    air: ["airflow", "air_flow", "flow", "cfm", "fan_speed"],
+    power: ["power", "power_kw", "kw", "watts", "power_w"]
+  };
+  const norm = s => String(s).trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  function mapCols(keys) {
+    const m = {}; const nk = keys.map(norm);
+    for (const f in ALIAS) {
+      let i = nk.findIndex(k => ALIAS[f].includes(k));
+      if (i < 0) i = nk.findIndex(k => ALIAS[f].some(a => a.length > 2 && k.startsWith(a)));
+      if (i >= 0 && !Object.values(m).includes(keys[i])) m[f] = keys[i];
+    }
+    return m;
+  }
+  const num = v => { if (v === undefined || v === null || v === "") return null; const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? null : n; };
+  function parseTime(v) {
+    if (v === undefined || v === null || v === "") return null;
+    if (typeof v === "number" || /^\d+(\.\d+)?$/.test(v)) { const n = +v; return new Date(n > 1e12 ? n : n * 1000); }
+    const d = new Date(String(v).replace(" ", "T")); return isNaN(d) ? null : d;
+  }
+  function parseCSV(text) {
+    const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim() && !l.startsWith("#"));
+    if (lines.length < 2) throw new Error("the file has no data rows under the header");
+    const sep = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ";" : (lines[0].includes("\t") ? "\t" : ",");
+    const split = l => { const o = []; let c = "", q = false; for (const ch of l) { if (ch === '"') q = !q; else if (ch === sep && !q) { o.push(c); c = ""; } else c += ch; } o.push(c); return o.map(s => s.trim()); };
+    const head = split(lines[0]);
+    return lines.slice(1).map(l => { const v = split(l); const o = {}; head.forEach((h, i) => o[h] = v[i]); return o; });
+  }
+  function toRows(objs) {
+    if (!objs.length) throw new Error("the file contains no readings");
+    const m = mapCols(Object.keys(objs[0]));
+    if (!m.temp) throw new Error("no temperature column found (use temperature, temp or temp_c)");
+    const rows = objs.map((o, i) => ({
+      time: m.time ? parseTime(o[m.time]) : new Date(Date.now() - (objs.length - i) * 60000),
+      rack: m.rack ? String(o[m.rack]) : "Sensor 1",
+      temp: num(o[m.temp]), hum: m.hum ? num(o[m.hum]) : null, air: m.air ? num(o[m.air]) : null, power: m.power ? num(o[m.power]) : null
+    })).filter(r => r.temp !== null && r.time);
+    if (!rows.length) throw new Error("no row had a readable time and temperature, for example 2026-11-13 08:00");
+    rows.sort((a, b) => a.time - b.time);
+    return { rows, cols: m };
+  }
+
+  /* ---------------- thresholds ---------------- */
+  const TH = store.get("cw-th", null);
+  if (TH) { $("t-warn").value = TH.warn; $("t-crit").value = TH.crit; $("h-min").value = TH.hmin; $("h-max").value = TH.hmax; }
+  const th = () => ({ warn: +$("t-warn").value || 27, crit: +$("t-crit").value || 32, hmin: +$("h-min").value || 20, hmax: +$("h-max").value || 80 });
+  ["t-warn", "t-crit", "h-min", "h-max"].forEach(id => $(id).addEventListener("change", () => { store.set("cw-th", th()); render(true); }));
+  function status(r, T) {
+    if (r.temp > T.crit || (r.hum !== null && (r.hum < 8 || r.hum > 90))) return "crit";
+    if (r.temp > T.warn || (r.hum !== null && (r.hum < T.hmin || r.hum > T.hmax))) return "warn";
+    return "ok";
+  }
+
+  /* ---------------- helpers ---------------- */
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const fmtDT = d => d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const fmtT = (d, sec) => d.toLocaleTimeString([], sec ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
+  const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+  const live = () => SOURCE.kind === "mqtt" || SOURCE.kind === "demo";
+
+  /* ---------------- summary shared by hero + dashboard ---------------- */
+  function summary() {
+    const T = th(); const latest = {};
+    DATA.forEach(r => latest[r.rack] = r);
+    const racks = Object.keys(latest).sort();
+    const L = racks.map(k => latest[k]);
+    if (!L.length) return null;
+    const hot = L.reduce((a, b) => b.temp > a.temp ? b : a);
+    const sts = L.map(r => status(r, T));
+    return { T, racks, L, hot, sts, overall: sts.includes("crit") ? "crit" : sts.includes("warn") ? "warn" : "ok", avgT: avg(L.map(r => r.temp)) };
+  }
+  const STXT = { ok: "Normal", warn: "Warning", crit: "Critical" };
+
+  function updateHero() {
+    const s = summary();
+    $("ro-avg").textContent = s ? s.avgT.toFixed(1) + " °C" : "–";
+    $("ro-hot").textContent = s ? s.hot.rack + " · " + s.hot.temp.toFixed(1) + " °C" : "–";
+    $("ro-st").textContent = s ? STXT[s.overall] : "–";
+    $("ro-st").style.color = s ? css("--" + s.overall) : "";
+    $("ro-src").textContent = { sample: "from sample data", file: "from " + SOURCE.name, mqtt: "live from MQTT", demo: "from the demo stream" }[SOURCE.kind];
+    AIR.heat = s ? Math.max(0, Math.min(1, (s.hot.temp - 22) / 12)) : .2;
+  }
+
+  /* ---------------- dashboard render ---------------- */
+  const charts = {};
+  let lastFull = 0, pending = false;
+  function render(force) {
+    updateHero();
+    if ($("view-dashboard").hidden) return;
+    const now = Date.now();
+    if (!force && now - lastFull < 1000) { if (!pending) { pending = true; setTimeout(() => { pending = false; render(true); }, 1000 - (now - lastFull)); } return; }
+    lastFull = now;
+    const s = summary();
+    // source line
+    const b = $("src-badge");
+    b.className = "badge " + ({ sample: "sample", file: "file", mqtt: "live", demo: "sample" }[SOURCE.kind]);
+    b.textContent = { sample: "Sample data", file: "Uploaded file", mqtt: "Live · MQTT", demo: "Demo stream" }[SOURCE.kind];
+    if (!s) {
+      $("src-text").textContent = SOURCE.kind === "mqtt" ? "Connected. Waiting for the first message on " + SOURCE.name + "…" : "No readings yet.";
+      $("kpis").innerHTML = ""; $("floor").innerHTML = '<p class="empty">Racks appear here when their first reading arrives.</p>';
+      $("alerts").innerHTML = ""; $("table").innerHTML = ""; Object.values(charts).forEach(c => c.destroy()); for (const k in charts) delete charts[k];
+      return;
+    }
+    const { T, racks, L, hot, sts, overall } = s;
+    const first = DATA[0].time, last = DATA[DATA.length - 1].time;
+    $("src-text").textContent = ({ sample: "Example readings for 8 racks over 24 h, not real measurements · ", file: SOURCE.name + " · ", mqtt: SOURCE.name + " · ", demo: "Simulated messages, not real measurements · " }[SOURCE.kind]) + DATA.length + " readings · " + (live() ? "last at " + fmtT(last, true) : fmtDT(first) + " – " + fmtDT(last));
+
+    // KPIs
+    const hums = L.map(r => r.hum).filter(v => v !== null), pw = L.map(r => r.power).filter(v => v !== null), air = L.map(r => r.air).filter(v => v !== null);
+    const alertsAll = DATA.filter(r => status(r, T) !== "ok");
+    const k = [
+      { cls: "status s-" + overall, l: "Cooling status", v: STXT[overall], s: sts.filter(x => x !== "ok").length + " of " + racks.length + " racks out of range" },
+      { l: "Avg inlet temp", v: s.avgT.toFixed(1) + "<small> °C</small>", s: "latest per rack" },
+      { l: "Hottest rack", v: hot.temp.toFixed(1) + "<small> °C</small>", s: esc(hot.rack) },
+      { l: "Avg humidity", v: hums.length ? avg(hums).toFixed(0) + "<small> %RH</small>" : "–", s: "limit " + T.hmin + "–" + T.hmax + " %RH" },
+      FAN ? { cls: "fan-" + (FAN.state === "ON" ? "on" : "off"), l: "Cooling fan", v: esc(FAN.state), s: "updated " + fmtT(FAN.time, true) } :
+      pw.length ? { l: "IT power", v: pw.reduce((a, b) => a + b, 0).toFixed(1) + "<small> kW</small>", s: "sum of latest" } : { l: "Airflow", v: air.length ? Math.round(avg(air)) + "<small> CFM</small>" : "–", s: air.length ? "avg per rack" : "not reported" },
+      { l: "Alert readings", v: String(alertsAll.length), s: live() ? "since connecting" : "in this data set" }
+    ];
+    $("kpis").innerHTML = k.map(x => `<div class="kpi ${x.cls || ""}"><div class="lbl">${x.l}</div><div class="val">${x.v}</div><div class="sub">${x.s}</div></div>`).join("");
+
+    // floor map
+    const stale = r => live() && Date.now() - r.time > 60000;
+    const tile = r => `<div class="rack s-${status(r, T)}${stale(r) ? " stale" : ""}${flashSet.has(r.rack) ? " flash" : ""}" title="${esc(r.rack)} · ${fmtDT(r.time)}"><div class="id">${esc(r.rack)}</div><div class="t">${r.temp.toFixed(1)}°</div><div class="h">${r.hum !== null ? r.hum.toFixed(0) + " %RH" : "&nbsp;"}</div></div>`;
+    const half = Math.ceil(L.length / 2);
+    $("floor").innerHTML = L.length > 1
+      ? `<div class="racks">${L.slice(0, half).map(tile).join("")}</div><div class="aisle-label"><span>▲ cold aisle ▼</span><span>${racks.length} racks</span></div><div class="racks">${L.slice(half).map(tile).join("")}</div>`
+      : `<div class="racks">${L.map(tile).join("")}</div>`;
+    flashSet.clear();
+
+    // alerts
+    $("a-sub").textContent = alertsAll.length ? alertsAll.length + " readings out of range" : "none";
+    const seen = new Set(), list = [];
+    for (const r of alertsAll.slice(-400).reverse()) { const key = r.rack + status(r, T) + Math.floor(r.time / (live() ? 60000 : 3600000)); if (seen.has(key)) continue; seen.add(key); list.push(r); if (list.length >= 40) break; }
+    $("alerts").innerHTML = list.length ? list.map(r => { const st = status(r, T); const why = r.temp > T.warn ? "inlet " + r.temp.toFixed(1) + " °C" : "humidity " + r.hum.toFixed(0) + " %RH"; return `<li><span class="pill ${st}">${st === "crit" ? "Critical" : "Warning"}</span><span><b>${esc(r.rack)}</b> · ${why}</span><span class="when">${fmtDT(r.time)}</span></li>`; }).join("") : '<li class="empty" style="background:none">All readings are within the limits.</li>';
+
+    // charts
+    drawCharts(racks, T);
+
+    // table
+    const has = f => DATA.some(r => r[f] !== null);
+    const cols = [["time", "Time"], ["rack", "Rack"], ["temp", "Temp °C"], ["hum", "Humidity %RH"], ["air", "Airflow"], ["power", "Power kW"]].filter(([f]) => f === "time" || f === "rack" || f === "temp" || has(f));
+    const shown = DATA.slice(-200).reverse();
+    $("r-sub").textContent = DATA.length > 200 ? "latest 200 of " + DATA.length : DATA.length + " rows";
+    $("table").innerHTML = "<thead><tr>" + cols.map(c => "<th>" + c[1] + "</th>").join("") + "<th>Status</th></tr></thead><tbody>" +
+      shown.map(r => { const st = status(r, T); return "<tr>" + cols.map(([f]) => "<td>" + (f === "time" ? (live() ? fmtT(r.time, true) : fmtDT(r.time)) : r[f] === null ? "–" : esc(r[f])) + "</td>").join("") + `<td><span class="pill ${st}">${st === "ok" ? "OK" : st === "crit" ? "Critical" : "Warning"}</span></td></tr>`; }).join("") + "</tbody>";
+  }
+
+  function drawCharts(racks, T) {
+    const fg = css("--fg"), muted = css("--muted"), line = css("--line");
+    const pal = [css("--accent"), "#9b7bf0", "#2fb79f", "#e2639f", "#6f95f2", "#c9a03a", "#5cbf5c", css("--hot")];
+    Chart.defaults.color = muted; Chart.defaults.font.family = "IBM Plex Sans, system-ui, sans-serif"; Chart.defaults.borderColor = line;
+    const t0 = DATA[0].time.getTime(), t1 = DATA[DATA.length - 1].time.getTime(), span = Math.max(1, t1 - t0);
+    const tick = v => { const d = new Date(v); return span > 864e5 ? d.toLocaleDateString([], { day: "numeric", month: "short" }) + " " + fmtT(d) : fmtT(d, span < 15 * 60000); };
+    const opts = (yTitle, extra) => ({
+      responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
+      interaction: { mode: "nearest", axis: "x", intersect: false },
+      plugins: { legend: { labels: { boxWidth: 10, boxHeight: 10, color: fg } }, tooltip: { backgroundColor: css("--raised"), titleColor: fg, bodyColor: fg, borderColor: line, borderWidth: 1, callbacks: { title: it => it.length ? new Date(it[0].parsed.x).toLocaleString() : "" } } },
+      scales: { x: { type: "linear", min: t0, max: t1, ticks: { color: muted, maxTicksLimit: 7, callback: tick }, grid: { display: false } }, y: { title: { display: true, text: yTitle, color: muted }, ticks: { color: muted }, grid: { color: line } }, ...(extra || {}) }
+    });
+    const mk = (id, cfg) => { if (charts[id]) charts[id].destroy(); charts[id] = new Chart($(id), cfg); };
+    const show = racks.slice(0, 8);
+    $("t-sub").textContent = racks.length > 8 ? "first 8 of " + racks.length + " racks" : racks.length + (racks.length > 1 ? " racks" : " sensor");
+    const ds = show.map((r, i) => ({ label: r, data: DATA.filter(x => x.rack === r).map(x => ({ x: x.time.getTime(), y: x.temp })), borderColor: pal[i % 8], backgroundColor: pal[i % 8], borderWidth: 2, pointRadius: live() ? 1.5 : 0, tension: .3 }));
+    ds.push({ label: "Warning " + T.warn + " °C", data: [{ x: t0, y: T.warn }, { x: t1, y: T.warn }], borderColor: css("--warn"), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 });
+    ds.push({ label: "Critical " + T.crit + " °C", data: [{ x: t0, y: T.crit }, { x: t1, y: T.crit }], borderColor: css("--crit"), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 });
+    mk("c-temp", { type: "line", data: { datasets: ds }, options: opts("°C") });
+
+    // bucketed averages for humidity / airflow / power
+    const nb = 120, bw = span / nb;
+    const bucket = (f, sum) => { const acc = new Map(); DATA.forEach(r => { if (r[f] === null) return; const b = Math.min(nb, Math.floor((r.time - t0) / bw)); const e = acc.get(b) || { s: 0, n: 0, racks: new Map() }; if (sum) e.racks.set(r.rack, r[f]); else { e.s += r[f]; e.n++; } acc.set(b, e); }); return [...acc.entries()].sort((a, b) => a[0] - b[0]).map(([b, e]) => ({ x: t0 + b * bw, y: +(sum ? [...e.racks.values()].reduce((a, c) => a + c, 0) : e.s / e.n).toFixed(2) })); };
+    const H = bucket("hum");
+    mk("c-hum", { type: "line", data: { datasets: H.length ? [
+      { label: "Avg humidity", data: H, borderColor: pal[0], backgroundColor: pal[0] + "26", fill: true, borderWidth: 2, pointRadius: 0, tension: .3 },
+      { label: "Min " + T.hmin, data: [{ x: t0, y: T.hmin }, { x: t1, y: T.hmin }], borderColor: css("--warn"), borderDash: [5, 4], borderWidth: 1, pointRadius: 0 },
+      { label: "Max " + T.hmax, data: [{ x: t0, y: T.hmax }, { x: t1, y: T.hmax }], borderColor: css("--warn"), borderDash: [5, 4], borderWidth: 1, pointRadius: 0 }] : [] }, options: opts("%RH") });
+    const A = bucket("air"), P = bucket("power", true);
+    $("x-title").textContent = A.length && P.length ? "Airflow and power" : A.length ? "Airflow" : P.length ? "Power" : "Airflow and power";
+    $("x-sub").textContent = A.length || P.length ? [A.length ? "avg CFM" : "", P.length ? "total kW" : ""].filter(Boolean).join(" · ") : "not reported by this source";
+    $("x-box").hidden = !(A.length || P.length); $("x-empty").hidden = !!(A.length || P.length);
+    const xd = [];
+    if (A.length) xd.push({ label: "Avg airflow (CFM)", data: A, borderColor: pal[2], borderWidth: 2, pointRadius: 0, tension: .3, yAxisID: "y" });
+    if (P.length) xd.push({ label: "Total power (kW)", data: P, borderColor: css("--hot"), borderWidth: 2, pointRadius: 0, tension: .3, yAxisID: A.length ? "y2" : "y" });
+    mk("c-extra", { type: "line", data: { datasets: xd }, options: opts(A.length ? "CFM" : "kW", A.length && P.length ? { y2: { position: "right", title: { display: true, text: "kW", color: muted }, ticks: { color: muted }, grid: { display: false } } } : null) });
+  }
+
+  /* ---------------- source switching ---------------- */
+  const flashSet = new Set();
+  function setConn(state, text) {
+    const p = $("conn-pill"); p.className = "conn" + (state ? " " + state : ""); $("conn-text").textContent = text;
+  }
+  function useStatic(rows, kind, name) {
+    stopLive(); DATA = rows; SOURCE = { kind, name }; FAN = null;
+    setConn("", kind === "file" ? "FILE · " + rows.length : "SAMPLE DATA"); render(true);
+  }
+
+  // tabs
+  const tabs = ["mqtt", "file", "demo"];
+  tabs.forEach(t => $("tab-" + t).addEventListener("click", () => tabs.forEach(u => { $("tab-" + u).setAttribute("aria-selected", u === t); $("pane-" + u).hidden = u !== t; })));
+
+  // file upload
+  function loadFile(f) {
+    if (!f) return;
+    const hint = $("f-hint");
+    if (f.size > 25e6) { hint.className = "hint err"; hint.textContent = "This file is larger than 25 MB. Export a shorter period and try again."; return; }
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const text = String(rd.result).replace(/^﻿/, "");
+        let objs;
+        if (/^\s*[\[{]/.test(text)) { const j = JSON.parse(text); objs = Array.isArray(j) ? j : (j.data || j.readings || j.records || Object.values(j).find(Array.isArray) || [j]); }
+        else objs = parseCSV(text);
+        const { rows, cols } = toRows(objs);
+        useStatic(rows, "file", f.name);
+        hint.className = "hint okk"; hint.textContent = "Loaded " + rows.length + " readings from " + f.name + ". Columns used: " + Object.keys(cols).join(", ") + ".";
+      } catch (e) { hint.className = "hint err"; hint.textContent = "Could not read " + f.name + ": " + e.message + "."; }
+    };
+    rd.onerror = () => { hint.className = "hint err"; hint.textContent = "The file could not be opened. Choose it again."; };
+    rd.readAsText(f);
+  }
+  $("file").addEventListener("change", e => { loadFile(e.target.files[0]); e.target.value = ""; });
+  const drop = $("drop");
+  ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", e => loadFile(e.dataTransfer.files[0]));
+  $("d-sample").addEventListener("click", () => useStatic(sampleData(), "sample", ""));
+
+  /* ---------------- live messages (MQTT + demo share this path) ---------------- */
+  let logCount = 0;
+  function logMsg(topic, payload) {
+    const el = $("log");
+    if (logCount === 0) el.innerHTML = "";
+    logCount++;
+    const d = document.createElement("div");
+    d.innerHTML = `<span class="tm">${fmtT(new Date(), true)}</span> <span class="tp">${esc(topic)}</span> ${esc(payload.length > 160 ? payload.slice(0, 160) + "…" : payload)}`;
+    el.prepend(d);
+    while (el.children.length > 150) el.lastChild.remove();
+    $("log-sub").textContent = logCount + " received";
+  }
+  // A message can be JSON ({"temperature":23.4,"humidity":45}) or one plain value on a
+  // metric topic (.../temperature -> 23.4). Values for the same rack are merged.
+  const METRICS = ["temp", "hum", "air", "power"];
+  const metricOf = name => { const n = norm(name); return METRICS.find(f => ALIAS[f].includes(n) || ALIAS[f].some(a => a.length > 2 && n.startsWith(a))) || null; };
+  const liveState = {};
+  let FAN = null;   // { state: "ON" | "OFF", time: Date } from .../fan/status
+  function onMessage(topic, payload) {
+    logMsg(topic, payload);
+    const parts = topic.split("/").filter(Boolean);
+    if (parts.some(x => norm(x) === "fan")) {           // fan status: ON / OFF (or 1 / 0)
+      const v = payload.trim().toUpperCase();
+      FAN = { state: v === "1" || v === "TRUE" ? "ON" : v === "0" || v === "FALSE" ? "OFF" : v.slice(0, 8), time: new Date() };
+      render(); return;
+    }
+    const last = parts[parts.length - 1] || topic;
+    let o = null; try { o = JSON.parse(payload); } catch (e) {}
+    const fields = {}; let rack = null, time = null;
+    if (o !== null && typeof o === "object") {
+      const m = mapCols(Object.keys(o));
+      METRICS.forEach(f => { if (m[f]) { const v = num(o[m[f]]); if (v !== null) fields[f] = v; } });
+      if (m.rack) rack = String(o[m.rack]);
+      if (m.time) time = parseTime(o[m.time]);
+      if (!Object.keys(fields).length) { const mf = metricOf(last), v = num(o.value ?? o.val ?? o.v); if (mf && v !== null) fields[mf] = v; }
+    } else {
+      const v = num(o !== null ? o : payload.trim());
+      if (v === null) return;                       // e.g. "online" on a status topic
+      fields[metricOf(last) || "temp"] = v;
+    }
+    if (!Object.keys(fields).length) return;
+    if (!rack) {
+      const generic = metricOf(last) || ["telemetry", "data", "state", "sensor", "sensors", "readings"].includes(norm(last));
+      rack = generic ? (parts[parts.length - 2] || "Sensor 1") : last;
+    }
+    const st = liveState[rack] = Object.assign(liveState[rack] || {}, fields);
+    if (st.temp === undefined) return;               // wait for this rack's first temperature
+    let t = time || new Date();
+    if (t > Date.now() + 3600e3 || t < Date.now() - 7 * 864e5) t = new Date();   // device clock not set
+    DATA.push({ time: t, rack, temp: st.temp, hum: st.hum ?? null, air: st.air ?? null, power: st.power ?? null });
+    if (DATA.length > MAX_LIVE) DATA.splice(0, DATA.length - MAX_LIVE);
+    flashSet.add(rack);
+    render();
+  }
+
+  // MQTT
+  let client = null;
+  const cfg = store.get("cw-mqtt", null);
+  if (cfg) { $("m-url").value = cfg.url || $("m-url").value; $("m-topic").value = cfg.topic || $("m-topic").value; $("m-user").value = cfg.user || ""; }
+  function stopLive() {
+    if (client) { try { client.end(true); } catch (e) {} client = null; }
+    if (demoFan) { clearInterval(demoFan); demoFan = null; }
+    if (demoTimer) { clearInterval(demoTimer); demoTimer = null; $("d-stream").textContent = "Start demo stream"; }
+    $("m-go").textContent = "Connect";
+  }
+  $("mqtt-form").addEventListener("submit", e => {
+    e.preventDefault();
+    const hint = $("m-hint");
+    if (client) { stopLive(); setConn("", "DISCONNECTED"); hint.className = "hint"; hint.textContent = "Disconnected from the broker."; $("log-sub").textContent = "not connected"; return; }
+    const url = $("m-url").value.trim(), topic = $("m-topic").value.trim();
+    if (!/^wss?:\/\//.test(url)) { hint.className = "hint err"; hint.textContent = "The broker URL must start with wss:// (or ws:// on a local network), for example wss://broker.emqx.io:8084/mqtt."; return; }
+    if (!topic) { hint.className = "hint err"; hint.textContent = "Enter a topic to subscribe to, for example hossam7192/datacenter/#."; return; }
+    if (location.protocol === "https:" && url.startsWith("ws://")) { hint.className = "hint err"; hint.textContent = "This page is served over HTTPS, so the browser blocks ws:// connections. Use the broker's wss:// address."; return; }
+    if (typeof mqtt === "undefined") { hint.className = "hint err"; hint.textContent = "The MQTT library did not load. Check the internet connection and reload the page."; return; }
+    store.set("cw-mqtt", { url, topic, user: $("m-user").value.trim() });
+    stopLive();
+    for (const k in liveState) delete liveState[k]; FAN = null;
+    DATA = []; SOURCE = { kind: "mqtt", name: topic }; logCount = 0; $("log").innerHTML = '<div class="tm">Waiting for messages…</div>';
+    setConn("busy", "CONNECTING"); hint.className = "hint"; hint.textContent = "Connecting to " + url + "…"; $("m-go").textContent = "Disconnect";
+    render(true);
+    const opts = { clientId: "coolwatch-web-" + Math.random().toString(16).slice(2, 10), clean: true, connectTimeout: 8000, reconnectPeriod: 4000 };
+    if ($("m-user").value.trim()) { opts.username = $("m-user").value.trim(); opts.password = $("m-pass").value; }
+    let ok = false;
+    try { client = mqtt.connect(url, opts); } catch (err) { hint.className = "hint err"; hint.textContent = "Could not start the connection: " + err.message; setConn("err", "ERROR"); client = null; $("m-go").textContent = "Connect"; return; }
+    client.on("connect", () => {
+      ok = true;
+      client.subscribe(topic, { qos: 0 }, err => {
+        if (err) { hint.className = "hint err"; hint.textContent = "Connected, but the broker refused the subscription to " + topic + "."; setConn("err", "SUBSCRIBE FAILED"); return; }
+        setConn("on", "LIVE · MQTT"); hint.className = "hint okk"; hint.textContent = "Connected to " + url + " and subscribed to " + topic + ". Publish a message to see it appear.";
+        $("log-sub").textContent = "subscribed";
+      });
+    });
+    client.on("message", (t, p) => onMessage(t, p.toString()));
+    client.on("reconnect", () => { setConn("busy", "RECONNECTING"); if (!ok) { hint.className = "hint err"; hint.textContent = "Cannot reach " + url + ". Check the address and port. If you opened this page inside Claude, the preview blocks live connections: host the page (see Setup) or open the file in your browser."; } });
+    client.on("close", () => { if (client) setConn("busy", "RECONNECTING"); });
+    client.on("error", err => { hint.className = "hint err"; hint.textContent = "Broker error: " + (err && err.message ? err.message : "connection refused") + ". Check the username and password."; setConn("err", "ERROR"); });
+  });
+
+  // demo stream: same message path as MQTT, generated in the page
+  let demoTimer = null, demoFan = null;
+  $("d-stream").addEventListener("click", () => {
+    if (demoTimer) { stopLive(); setConn("", "DEMO STOPPED"); return; }
+    stopLive();
+    for (const k in liveState) delete liveState[k]; FAN = null;
+    DATA = []; SOURCE = { kind: "demo", name: "demo" }; logCount = 0;
+    const racks = ["R-A1", "R-A2", "R-A3", "R-A4", "R-B1", "R-B2", "R-B3", "R-B4"]; const start = Date.now();
+    // two minutes of back-history so the charts are not empty
+    for (let s = 120; s > 0; s -= 4) racks.forEach((r, k) => DATA.push(demoReading(r, k, (start - s * 1000 - start) / 1000, new Date(start - s * 1000))));
+    let i = 0;
+    demoTimer = setInterval(() => { const k = i++ % racks.length; const el = (Date.now() - start) / 1000; const rd = demoReading(racks[k], k, el, null); onMessage("hossam7192/datacenter/" + racks[k], JSON.stringify({ rack: rd.rack, temperature: rd.temp, humidity: rd.hum, airflow: rd.air })); }, 500);
+    demoFan = setInterval(() => { const hot = Math.max(...DATA.slice(-16).map(r => r.temp)); onMessage("hossam7192/datacenter/fan/status", hot > 27 ? "ON" : "OFF"); }, 3000);
+    $("d-stream").textContent = "Stop demo stream"; setConn("on", "DEMO STREAM"); render(true);
+  });
+  function demoReading(r, k, el, time) {
+    let t = 21.6 + k * .4 + Math.sin(el / 30 + k) * .5 + (Math.random() - .5) * .3, air = 820 - k * 12 + (Math.random() - .5) * 20;
+    if (r === "R-B3") { const f = Math.max(0, Math.min(1, (el + 40) / 90)); t += 12 * f; air -= 300 * f; }
+    if (r === "R-B4") t += 5 * Math.max(0, Math.min(1, (el - 20) / 60));
+    return { time: time || new Date(), rack: r, temp: +t.toFixed(1), hum: +(45 + Math.sin(el / 40 + k) * 3 + (Math.random() - .5)).toFixed(1), air: Math.round(air), power: null };
+  }
+
+  // stale-data tick for live sources
+  setInterval(() => { if (live() && !$("view-dashboard").hidden) render(); }, 10000);
+
+  /* ---------------- presentation ---------------- */
+  $("btn-present").addEventListener("click", () => {
+    const on = document.body.classList.toggle("present");
+    $("btn-present").textContent = on ? "Exit presentation" : "Presentation mode";
+    if (on && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+    if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    setTimeout(() => render(true), 80);
+  });
+  document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement && document.body.classList.contains("present")) { document.body.classList.remove("present"); $("btn-present").textContent = "Presentation mode"; render(true); } });
+
+  /* ---------------- hero airflow animation ---------------- */
+  const AIR = { heat: .2 };
+  (function airflow() {
+    const cv = $("airflow"), cx = cv.getContext("2d"), W = cv.width, H = cv.height;
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const racks = [{ x: 250, w: 130 }, { x: 580, w: 130 }];
+    const floorY = 520, top = 110;
+    const P = [];
+    function spawn() {
+      const side = Math.random() < .5 ? 0 : 1;
+      return { x: 480 + (Math.random() - .5) * 150, y: floorY + 10, side, phase: 0, vx: 0, vy: -(1.4 + Math.random() * 1.2), heat: 0, life: 0, row: top + 40 + Math.random() * (floorY - top - 80) };
+    }
+    for (let i = 0; i < 300; i++) { const p = spawn(); p.y = floorY - Math.random() * 380; P.push(p); }
+    const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+    const hex = h => { h = h.replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join(""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+    function frame() {
+      const C = { bg: css("--surface-2"), line: css("--line"), fg: css("--fg"), muted: css("--muted"), cold: hex(css("--accent")), hot: hex(css("--hot")), crit: css("--crit"), rack: css("--raised") };
+      cx.fillStyle = C.bg; cx.fillRect(0, 0, W, H);
+      // floor + perforated tile
+      cx.fillStyle = C.line; cx.fillRect(0, floorY, W, 4);
+      cx.fillStyle = `rgb(${C.cold})`; cx.globalAlpha = .9; cx.fillRect(420, floorY - 3, 120, 7); cx.globalAlpha = 1;
+      cx.font = "600 15px JetBrains Mono, monospace"; cx.fillStyle = C.muted; cx.fillText("RAISED FLOOR · CHILLED AIR PLENUM", 24, floorY + 40);
+      // particles
+      const heatBoost = AIR.heat;
+      P.forEach(p => {
+        if (p.phase === 0) { // rising in cold aisle, then turn into a rack
+          p.y += p.vy; p.x += (Math.random() - .5) * .6;
+          if (p.y < p.row) { p.phase = 1; p.vx = p.side ? 2.6 : -2.6; p.vy = 0; }
+        } else if (p.phase === 1) { // through the rack
+          p.x += p.vx; p.heat = Math.min(1, p.heat + .03 + heatBoost * .02);
+          const r = racks[p.side]; if (p.side ? p.x > r.x + r.w + 4 : p.x < r.x - 4) { p.phase = 2; p.vy = -(1 + Math.random()); }
+        } else { // hot exhaust rising
+          p.x += p.vx * .35; p.y += p.vy; p.vy -= .02;
+          if (p.y < 10 || p.x < -10 || p.x > W + 10) Object.assign(p, spawn());
+        }
+        const col = mix(p.phase === 0 ? C.cold : C.cold, C.hot, p.phase === 0 ? 0 : p.heat);
+        cx.fillStyle = `rgba(${col},${p.phase === 2 ? .75 : .9})`;
+        cx.beginPath(); cx.arc(p.x, p.y, p.phase === 1 ? 2.6 : 3.4, 0, 6.3); cx.fill();
+      });
+      // racks drawn over the particles that pass through them
+      racks.forEach((r, i) => {
+        cx.fillStyle = C.rack; cx.strokeStyle = C.line; cx.lineWidth = 3;
+        cx.beginPath(); cx.roundRect ? cx.roundRect(r.x, top, r.w, floorY - top, 8) : cx.rect(r.x, top, r.w, floorY - top); cx.fill(); cx.stroke();
+        for (let y = top + 26; y < floorY - 16; y += 34) { cx.fillStyle = C.line; cx.fillRect(r.x + 14, y, r.w - 28, 14); cx.fillStyle = i === 1 && heatBoost > .6 ? C.crit : `rgb(${C.cold})`; cx.fillRect(r.x + r.w - 24, y + 4, 6, 6); }
+      });
+      cx.font = "700 20px Archivo, sans-serif"; cx.textAlign = "center";
+      cx.fillStyle = `rgb(${C.cold})`; cx.fillText("COLD AISLE", 480, 60);
+      cx.fillStyle = `rgb(${C.hot})`; cx.fillText("HOT AISLE", 120, 60); cx.fillText("HOT AISLE", 840, 60);
+      cx.textAlign = "left";
+      if (!reduce) requestAnimationFrame(frame);
+    }
+    if (reduce) { for (let i = 0; i < 400; i++) { /* settle particles for a static frame */ P.forEach(p => { if (p.phase === 0) { p.y += p.vy; if (p.y < p.row) { p.phase = 1; p.vx = p.side ? 2.6 : -2.6; } } else if (p.phase === 1) { p.x += p.vx; p.heat = Math.min(1, p.heat + .04); const r = racks[p.side]; if (p.side ? p.x > r.x + r.w + 4 : p.x < r.x - 4) { p.phase = 2; p.vy = -1.5; } } else { p.y += p.vy; if (p.y < 10) Object.assign(p, spawn()); } }); } }
+    frame();
+  })();
+
+  /* ---------------- theme changes ---------------- */
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render(true));
+  new MutationObserver(() => render(true)).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  /* ---------------- start ---------------- */
+  DATA = sampleData(); SOURCE = { kind: "sample", name: "" };
+  route(); updateHero();
+})();
+</script>
+
+</body>
+</html>
